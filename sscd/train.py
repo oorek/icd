@@ -441,7 +441,11 @@ class SSCD(pl.LightningModule):
         input = batch["input"]
         metadata_keys = ["image_num", "split", "instance_id"]
         batch = {k: v for (k, v) in batch.items() if k in metadata_keys}
-        batch["embeddings"] = self(input)[-1]
+        if self.args.kd:
+            batch["embeddings"] = self(input)[-1]
+        else:
+            batch["embeddings"] = self(input)
+        
         return batch
 
     def validation_epoch_end(self, outputs):
