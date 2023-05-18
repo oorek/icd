@@ -1,7 +1,7 @@
-# This repository contains strong SSCD baseline implementation
+
 
 # Weakly-supervised Knowledge Distillation for Image Copy Detection
-
+This repository contains strong SSCD baseline implementation
 
 This is the open-source codebase for
 "[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261)",
