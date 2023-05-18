@@ -8,6 +8,8 @@
 from argparse import ArgumentParser
 import logging
 import os
+import functools
+import pandas as pd
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -24,8 +26,9 @@ from pytorch_lightning.utilities.apply_func import move_data_to_device
 from pl_bolts.optimizers.lars import LARS
 from pl_bolts.optimizers.lr_scheduler import LinearWarmupCosineAnnealingLR
 from torch.utils.data import DataLoader
+from torchvision.datasets.folder import is_image_file, default_loader
 
-from sscd.datasets.disc import DISCEvalDataset
+from sscd.datasets.disc import DISCEvalDataset, DISCTrainDataset
 from sscd.datasets.image_folder import ImageFolder
 from sscd.lib.distributed_util import cross_gpu_batch
 from sscd.transforms.repeated_augmentation import RepeatedAugmentationTransform
@@ -50,7 +53,8 @@ if DEBUG:
 
 def add_train_args(parser: ArgumentParser, required=True):
     parser = parser.add_argument_group("Train")
-    parser.add_argument('--kd', default=True, type=parse_bool)
+    parser.add_argument('--kd', default=False, type=parse_bool)
+    parser.add_argument('--student', default=None, choices=["resnet18", "efficientnet_b0", "mobilenetv2_100"])
     parser.add_argument('--ckpt', type=str)
     parser.add_argument("--gpus", default=2, type=int)
     parser.add_argument("--accelerator", default="auto")
@@ -69,7 +73,7 @@ def add_train_args(parser: ArgumentParser, required=True):
         default="STRONG_BLUR",
         choices=[x.name for x in AugmentationSetting],
     )
-    parser.add_argument("--warmup_epochs", default=5, type=int)
+    parser.add_argument("--warmup_epochs", default=1, type=int)
     parser.add_argument(
         "--base_learning_rate",
         default=0.3,
@@ -103,6 +107,9 @@ def add_data_args(parser, required=True):
     parser.add_argument("--output_path", required=required, type=str)
     parser.add_argument("--train_dataset_path", required=required, type=str)
     parser.add_argument("--val_dataset_path", required=False, type=str)
+    parser.add_argument("--query_dataset_path", required=False, type=str)
+    parser.add_argument("--ref_dataset_path", required=False, type=str)
+    
 
 
 parser = ArgumentParser()
@@ -110,6 +117,11 @@ Model.add_arguments(parser)
 add_train_args(parser)
 add_data_args(parser)
 
+@functools.lru_cache()
+def get_image_paths(path):
+    logging.info(f"Resolving files in: {path}")
+    filenames = [f"{path}/{file}" for file in os.listdir(path)]
+    return sorted([fn for fn in filenames if is_image_file(fn)])
 
 class DISCData(pl.LightningDataModule):
     """A data module describing datasets used during training."""
@@ -119,6 +131,8 @@ class DISCData(pl.LightningDataModule):
         *,
         train_dataset_path,
         val_dataset_path,
+        query_dataset_path, 
+        ref_dataset_path,
         train_batch_size,
         augmentations: AugmentationSetting,
         train_image_size=224,
@@ -129,28 +143,35 @@ class DISCData(pl.LightningDataModule):
         super().__init__()
         self.train_batch_size = train_batch_size
         self.val_batch_size = val_batch_size
+        self.query_dataset_path = query_dataset_path
+        self.ref_dataset_path = ref_dataset_path
         self.train_dataset_path = train_dataset_path
         self.val_dataset_path = val_dataset_path
         self.workers = workers
-        transforms = augmentations.get_transformations(train_image_size)
-        transforms = RepeatedAugmentationTransform(transforms, copies=2)
-        self.train_dataset = ImageFolder(self.train_dataset_path, transform=transforms)
+
+        self.train_dataset = DISCTrainDataset(
+                                train_dataset_path,
+                                query_dataset_path, 
+                                ref_dataset_path,
+                                augmentations=augmentations,
+                                supervised=False
+                            )
         if val_dataset_path:
             self.val_dataset = self.make_validation_dataset(
-                self.val_dataset_path,
-                self.val_batch_size,
+                path=self.val_dataset_path,
                 size=val_image_size,
             )
         else:
             self.val_dataset = None
-
+        
+        self.loader = default_loader
+    
     @classmethod
     def make_validation_dataset(
         cls,
         path,
-        val_batch_size,
-        include_train=False,
         size=288,
+        include_train=False,
         preserve_aspect_ratio=False,
     ):
         transforms = build_transforms(
@@ -197,6 +218,7 @@ class SSCD(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.args = args
+        self.kd = args.kd
         if args.ckpt:
             self.model = call_using_args(Model, args)
             state_dict = torch.load(args.ckpt)
@@ -205,13 +227,17 @@ class SSCD(pl.LightningModule):
         else: 
             self.model = call_using_args(Model, args)
         
-        if args.kd:
+        if self.kd:
             import timm
-            self.student = timm.create_model('resnet18')
-            self.student.global_pool = GlobalGeMPool2d(pooling_param=3)
-            self.student.fc = nn.Identity()
-            self.student.Norm = L2Norm()
-
+            self.student = timm.create_model(args.student)
+            if "resnet" in args.student:
+                self.student.global_pool = GlobalGeMPool2d(pooling_param=3)
+                self.student.fc = nn.Identity()
+                self.student.Norm = L2Norm()
+            elif "mobile" in args.student:
+                self.student.global_pool = GlobalGeMPool2d(pooling_param=3)
+                self.student.classifier = nn.Linear(1280, 512)
+                self.student.Norm = L2Norm()
 
         use_mixup = args.mixup
         self.mixup = (
@@ -239,11 +265,14 @@ class SSCD(pl.LightningModule):
         self.train_steps = train_steps
 
     def forward(self, x):
-        self.model.eval()
-        with torch.no_grad():
-            emb_t = self.model(x)
-        emb_s = self.student(x)
-        return emb_t, emb_s
+        if self.kd:
+            with torch.no_grad():
+                emb_t = self.model(x)
+            emb_s = self.student(x)
+            return emb_t, emb_s
+        else:
+            emb = self.model(x)
+            return emb
 
     def configure_optimizers(self):
         optimizer = LARS(
@@ -273,18 +302,25 @@ class SSCD(pl.LightningModule):
             batch = self.mixup({"input": input, "instance_id": instance_ids})
             input = batch["input"]
             instance_ids = batch["instance_id"]
-        embeddings, emb2 = self(input)
-        loss = self.kd_loss(embeddings, emb2)
-        # loss = self.loss(embeddings, emb2, instance_ids)
+        
+        scheduler = self.lr_schedulers()
+        self.log('learning rate', scheduler.get_last_lr()[0], on_epoch=True)
 
-        # loss = kd_loss * 10 + losses
+        if self.kd:
+            emb_t, emb_s = self(input)
+            loss = self.kd_loss(emb_t, emb_s)
+            # loss = self.loss(emb_t, emb_s, instance_ids)
+        else:
+            emb = self(input)
+            loss = self.loss(emb, None, instance_labels=instance_ids)
+        
         return loss
 
-    def kd_loss(self, y_t, y_s, temperature=1):
+    def kd_loss(self, y_t, y_s, temperature=0.05):
         p_t = F.softmax(y_t/temperature, dim=1)
         p_s = F.log_softmax(y_s/temperature, dim=1)
         loss = F.kl_div(p_s, p_t, size_average=False) * (temperature**2) / y_s.shape[0]
-        return loss
+        return loss * 100
 
     def cross_gpu_similarity(self, embeddings, instance_labels, mixup: bool):
         """Compute a cross-GPU embedding similarity matrix.
@@ -314,7 +350,6 @@ class SSCD(pl.LightningModule):
         M = all_embeddings.size(0)
         R = self.global_rank
         similarity = embeddings.matmul(all_embeddings.transpose(0, 1))
-        similarity /= 100000   #################################################################################
         if mixup:
             # In the mixup case, instance_labels are a NxN distribution
             # describing similarity within a per-GPU batch. We infer all inputs
@@ -338,7 +373,7 @@ class SSCD(pl.LightningModule):
 
     def loss(self, emb_t, emb_s, instance_labels):
         similarity, match_matrix, identity = self.cross_gpu_similarity(
-            emb_s, instance_labels, self.mixup
+            emb_t, instance_labels, self.mixup
         )
         non_matches = match_matrix == 0
         nontrivial_matches = match_matrix * (~identity)
@@ -376,6 +411,7 @@ class SSCD(pl.LightningModule):
             kd_loss = self.kd_loss(emb_t, emb_s) * 100
             components["KD_Loss"] = kd_loss
             loss = infonce_loss + kd_loss
+            emb_t = emb_s
 
         # Log stats and loss components.
         with torch.no_grad():
@@ -384,7 +420,7 @@ class SSCD(pl.LightningModule):
                 / nontrivial_matches.sum(),
                 "negative_sim": (similarity * non_matches).sum() / non_matches.sum(),
                 "nearest_negative_sim": max_non_match_sim.mean(),
-                "center_l2_norm": emb_s.mean(dim=0).pow(2).sum().sqrt(),
+                "center_l2_norm": emb_t.mean(dim=0).pow(2).sum().sqrt(),
             }
         self.log_dict(stats, on_step=False, on_epoch=True)
         self.log_dict(components, on_step=True, on_epoch=True, prog_bar=True)
@@ -399,7 +435,6 @@ class SSCD(pl.LightningModule):
                 stats,
                 global_step=self.global_step,
             )
-
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -494,6 +529,8 @@ def main(args):
     data = DISCData(
         train_dataset_path=args.train_dataset_path,
         val_dataset_path=args.val_dataset_path,
+        query_dataset_path=args.query_dataset_path,
+        ref_dataset_path=args.ref_dataset_path,
         train_batch_size=args.batch_size // world_size,
         train_image_size=args.train_image_size,
         val_image_size=args.val_image_size,

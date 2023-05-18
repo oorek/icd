@@ -8,6 +8,13 @@ import enum
 import json
 from classy_vision.dataset.transforms import build_transforms
 
+_base_config = """
+[
+    {"name": "Resize", "size": [224,224]},
+    {"name": "ToTensor"},
+    {"name": "Normalize", "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
+]
+"""
 
 _simclr_config = """
 [
@@ -177,6 +184,7 @@ _advanced_augs_config = """
 class AugmentationSetting(enum.Enum):
     """Augmentation configs explored in the SSCD paper."""
 
+    BASE = enum.auto()
     SIMCLR = enum.auto()
     STRONG_BLUR = enum.auto()
     ADVANCED = enum.auto()
@@ -188,6 +196,7 @@ class AugmentationSetting(enum.Enum):
 
     def _get_config(self, value):
         return {
+            self.BASE: _base_config,
             self.SIMCLR: _simclr_config,
             self.STRONG_BLUR: _strong_blur_config,
             self.ADVANCED: _advanced_augs_config,

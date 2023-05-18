@@ -73,7 +73,7 @@ class Model(LightningModule):
     def add_arguments(cls, parser: argparse.ArgumentParser):
         parser = parser.add_argument_group("Model")
         parser.add_argument(
-            "--backbone", default="TV_RESNET50", choices=[b.name for b in Backbone]
+            "--backbone", default="TV_RESNET18", choices=[b.name for b in Backbone]
         )
         parser.add_argument("--dims", default=512, type=int)
         parser.add_argument("--pool_param", default=3, type=float)
