@@ -1,6 +1,6 @@
 
 
-# Unsupervised Knowledge Distillation for Image Copy Detection on Lightweight models.
+# Unsupervised Knowledge Distillation for Image Copy Detection on Lightweight Models.
 This repository contains strong SSCD baseline implementation.
 "[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261)"
 
@@ -33,7 +33,7 @@ with some components from [Classy Vision](https://classyvision.ai/).
 - MobileViT
 
 
-## SSCD Pretrained models
+## SSCD Pretrained Models
 
 | name                   | dataset  | trunk           | augmentations    | dimensions | classy vision                                                                               | torchvision                                                                                      | torchscript                                                                                      |
 |------------------------|----------|-----------------|------------------|------------|---------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
@@ -117,7 +117,7 @@ with some components from [Classy Vision](https://classyvision.ai/).
   </tr>
 </table>
 
-## DINO-V2 Pretrained Model
+## DINO-V2 Pretrained Models
 
 <table style="margin: auto">
   <tr>
