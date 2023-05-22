@@ -1,16 +1,20 @@
 
 
 # Unsupervised Knowledge Distillation for Image Copy Detection on Lightweight models.
-This repository contains strong SSCD baseline[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261) implementation.
+This repository contains strong SSCD baseline implementation.
+"[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261)"
 
 This is the open-source codebase for
-"[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261)",
-recently accepted to [CVPR 2022](https://cvpr2022.thecvf.com/).
+"[A Self-Supervised Descriptor for Image Copy Detection](https://cvpr2022.thecvf.com/)[CVPR 2022]".
 
 ## About this codebase
 
 This implementation is built on [Pytorch Lightning](https://pytorchlightning.ai/),
 with some components from [Classy Vision](https://classyvision.ai/).
+
+## Datasets used
+- DISC (Facebook Image Similarity Challenge 2021)
+- Copydays
 
 ## Unsupervised Knowledge Distillation
 - similarity distillation 
