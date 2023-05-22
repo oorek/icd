@@ -1,7 +1,7 @@
 
 
-# Weakly-supervised Knowledge Distillation for Image Copy Detection
-This repository contains strong SSCD baseline implementation
+# Unsupervised Knowledge Distillation for Image Copy Detection on Lightweight models.
+This repository contains strong SSCD baseline[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261) implementation.
 
 This is the open-source codebase for
 "[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261)",
@@ -11,6 +11,22 @@ recently accepted to [CVPR 2022](https://cvpr2022.thecvf.com/).
 
 This implementation is built on [Pytorch Lightning](https://pytorchlightning.ai/),
 with some components from [Classy Vision](https://classyvision.ai/).
+
+## Unsupervised Knowledge Distillation
+- similarity distillation 
+- KoLeo regularization
+- DirectCLR contrastive learning
+
+## Teacher Models(Pretrained)
+- SSCD: ResNet-50
+- DINO: ViT-B/16
+
+## Student Models
+- ResNet-18
+- EfficientNet-B0
+- MobileNet-V3-Large
+- ViT-S
+- MobileViT
 
 
 ## SSCD Pretrained models
@@ -24,38 +40,6 @@ with some components from [Classy Vision](https://classyvision.ai/).
 | sscd_imagenet_blur     | ImageNet | ResNet50        | strong blur      | 512        | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_blur.classy.pt)     | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_blur.torchvision.pt)     | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_blur.torchscript.pt)     |
 | sscd_imagenet_advanced | ImageNet | ResNet50        | advanced         | 512        | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_advanced.classy.pt) | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_advanced.torchvision.pt) | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_advanced.torchscript.pt) |
 | sscd_imagenet_mixup    | ImageNet | ResNet50        | advanced + mixup | 512        | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_mixup.classy.pt)    | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_mixup.torchvision.pt)    | [link](https://dl.fbaipublicfiles.com/sscd-copy-detection/sscd_imagenet_mixup.torchscript.pt)    |
-
-We recommend `sscd_disc_mixup` (ResNet50) as a default SSCD model,
-especially when comparing to other standard ResNet50 models,
-and `sscd_disc_large` (ResNeXt101) as a higher accuracy alternative
-using a bit more compute.
-
-Classy Vision and Torchvision use different default cardinality settings
-for ResNeXt101. We do not provide a Torchvision version of the
-`sscd_disc_large` model for this reason.
-
-## Installation
-
-## Inference using SSCD models
-
-This section describes how to use pretrained SSCD models for inference.
-To perform inference for DISC and Copydays evaluations, see
-[Evaluation](docs/Evaluation.md).
-
-#### Descriptor post-processing
-L2 Norm -> Centering/Whitening -> Score Normalization (but has no effect on ranking metrics)
-Score Normalization improve global accuracy.
-
-
-## Reproducing evaluation results
-
-To reproduce evaluation results, see [Evaluation](docs/Evaluation.md).
-
-## Training SSCD models
-
-For information on how to train SSCD models, see 
-[Training](docs/Training.md).
-
 
 ## Citation
 ```
