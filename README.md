@@ -2,9 +2,6 @@
 
 # Unsupervised Knowledge Distillation for Image Copy Detection on Lightweight Models.
 This repository contains strong SSCD baseline implementation.
-"[A Self-Supervised Descriptor for Image Copy Detection](https://arxiv.org/abs/2202.10261)"
-
-This is the open-source codebase for
 "[A Self-Supervised Descriptor for Image Copy Detection](https://cvpr2022.thecvf.com/)[CVPR 2022]".
 
 ## About this codebase
