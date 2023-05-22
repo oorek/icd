@@ -9,6 +9,9 @@ import enum
 from torch import nn
 from torch.nn import functional as F
 from torchvision.models.resnet import resnet18, resnet50, resnext101_32x8d
+from torchvision.models.efficientnet import efficientnet_b0
+from torchvision.models.mobilenetv3 import mobilenet_v3_large
+from torchvision.models.regnet import regnet_x_800mf, regnet_y_800mf
 from classy_vision.models import build_model
 from .gem_pooling import GlobalGeMPool2d
 from pytorch_lightning import LightningModule
@@ -24,8 +27,14 @@ class Backbone(enum.Enum):
     CV_RESNET50 = ("resnet50", 2048, Implementation.CLASSY_VISION)
     CV_RESNEXT101 = ("resnext101_32x4d", 2048, Implementation.CLASSY_VISION)
 
-    TV_RESNET18 = (resnet18, 512, Implementation.TORCHVISION)
-    TV_RESNET50 = (resnet50, 2048, Implementation.TORCHVISION)
+
+    TV_EFFICIENTNET_B0 = (efficientnet_b0, 1280, Implementation.TORCHVISION)
+    TV_MOBILENETV3 = (mobilenet_v3_large, 1280, Implementation.TORCHVISION) # 
+    TV_REGNET_X_800MF = (regnet_x_800mf, 672, Implementation.TORCHVISION)
+    TV_REGNET_Y_800MF = (regnet_y_800mf, 784, Implementation.TORCHVISION) # 6,432,512 sum(p.numel() for p in models.regnet.regnet_y_800mf().parameters())
+
+    TV_RESNET18 = (resnet18, 512, Implementation.TORCHVISION) # 11,689,512
+    TV_RESNET50 = (resnet50, 2048, Implementation.TORCHVISION) # 25,557,032
     TV_RESNEXT101 = (resnext101_32x8d, 2048, Implementation.TORCHVISION)
 
     def build(self, dims: int):
@@ -60,9 +69,14 @@ class Model(LightningModule):
         elif impl == Implementation.TORCHVISION:
             if pool_param > 1:
                 self.backbone.avgpool = GlobalGeMPool2d(pool_param)
-                fc = self.backbone.fc
-                nn.init.xavier_uniform_(fc.weight)
-                nn.init.constant_(fc.bias, 0)
+                if 'RESNET' in backbone:
+                    fc = self.backbone.fc
+                    nn.init.xavier_uniform_(fc.weight)
+                    nn.init.constant_(fc.bias, 0)
+                elif 'EFFICIENT' in backbone:
+                    fc = self.backbone.classifier[1]
+                    nn.init.xavier_uniform_(fc.weight)
+                    nn.init.constant_(fc.bias, 0)
             self.embeddings = L2Norm()
 
     def forward(self, x):

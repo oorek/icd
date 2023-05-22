@@ -8,6 +8,7 @@
 from argparse import ArgumentParser
 import logging
 import os
+import glob
 import functools
 import pandas as pd
 import numpy as np
@@ -37,8 +38,10 @@ from sscd.models.model import Model
 from sscd.transforms.settings import AugmentationSetting
 from sscd.lib.util import call_using_args, parse_bool
 
-from models.model import L2Norm
+# from models.model import L2Norm
 from models.gem_pooling import GlobalGeMPool2d
+
+import timm
 
 
 DEBUG = False
@@ -53,6 +56,7 @@ if DEBUG:
 
 def add_train_args(parser: ArgumentParser, required=True):
     parser = parser.add_argument_group("Train")
+    parser.add_argument('--resume', default="", type=str)
     parser.add_argument('--kd', default=False, type=parse_bool)
     parser.add_argument('--student', default=None, choices=["resnet18", "efficientnet_b0", "mobilenetv2_100"])
     parser.add_argument('--ckpt', type=str)
@@ -111,7 +115,6 @@ def add_data_args(parser, required=True):
     parser.add_argument("--ref_dataset_path", required=False, type=str)
     
 
-
 parser = ArgumentParser()
 Model.add_arguments(parser)
 add_train_args(parser)
@@ -137,8 +140,8 @@ class DISCData(pl.LightningDataModule):
         augmentations: AugmentationSetting,
         train_image_size=224,
         val_image_size=288,
-        val_batch_size=256,
-        workers=10,
+        val_batch_size=128,
+        workers=28,
     ):
         super().__init__()
         self.train_batch_size = train_batch_size
@@ -219,25 +222,17 @@ class SSCD(pl.LightningModule):
         self.save_hyperparameters()
         self.args = args
         self.kd = args.kd
-        if args.ckpt:
-            self.model = call_using_args(Model, args)
-            state_dict = torch.load(args.ckpt)
-            self.model.load_state_dict(state_dict)
-            self.model.freeze()
-        else: 
-            self.model = call_using_args(Model, args)
-        
+        self.model = call_using_args(Model, args) # 18
+        if args.resume:
+            pths = glob.glob(f"{args.resume}/*.pt")
+            best_pth = sorted(pths)[-1]
+            self.model.load_state_dict(torch.load(best_pth))
+
         if self.kd:
-            import timm
-            self.student = timm.create_model(args.student)
-            if "resnet" in args.student:
-                self.student.global_pool = GlobalGeMPool2d(pooling_param=3)
-                self.student.fc = nn.Identity()
-                self.student.Norm = L2Norm()
-            elif "mobile" in args.student:
-                self.student.global_pool = GlobalGeMPool2d(pooling_param=3)
-                self.student.classifier = nn.Linear(1280, 512)
-                self.student.Norm = L2Norm()
+            self.teacher = Model(backbone="TV_RESNET50", dims=512, pool_param=3) # 50
+            state_dict = torch.load(args.ckpt)
+            self.teacher.load_state_dict(state_dict)
+            self.teacher.freeze()
 
         use_mixup = args.mixup
         self.mixup = (
@@ -264,15 +259,25 @@ class SSCD(pl.LightningModule):
         self.momentum = args.momentum
         self.train_steps = train_steps
 
+        # create the queue
+        self.K = 65536
+        self.register_buffer("queue", torch.randn(512, self.K)) # embedding size, buffer size
+        self.queue = nn.functional.normalize(self.queue, dim=0)
+
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
+        self.best_map = 0.0
+
+
     def forward(self, x):
+        emb = self.model(x)
         if self.kd:
             with torch.no_grad():
-                emb_t = self.model(x)
-            emb_s = self.student(x)
-            return emb_t, emb_s
+                emb_t = self.teacher(x)
+            return emb, emb_t
         else:
-            emb = self.model(x)
             return emb
+
 
     def configure_optimizers(self):
         optimizer = LARS(
@@ -303,25 +308,65 @@ class SSCD(pl.LightningModule):
             input = batch["input"]
             instance_ids = batch["instance_id"]
         
-        scheduler = self.lr_schedulers()
-        self.log('learning rate', scheduler.get_last_lr()[0], on_epoch=True)
-
         if self.kd:
-            emb_t, emb_s = self(input)
-            loss = self.kd_loss(emb_t, emb_s)
-            # loss = self.loss(emb_t, emb_s, instance_ids)
+            emb, emb_t = self(input)
+            infonce_loss = self.loss(emb, instance_ids)
+            kd_loss = self.kd_loss(emb, emb_t)
+            loss = infonce_loss + kd_loss
         else:
             emb = self(input)
-            loss = self.loss(emb, None, instance_labels=instance_ids)
-        
+            loss = self.loss(emb, instance_ids)
+        self.log("loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('learning rate', self.lr_schedulers().get_last_lr()[0], on_epoch=True, prog_bar=True)
         return loss
 
-    def kd_loss(self, y_t, y_s, temperature=0.05):
-        p_t = F.softmax(y_t/temperature, dim=1)
-        p_s = F.log_softmax(y_s/temperature, dim=1)
-        loss = F.kl_div(p_s, p_t, size_average=False) * (temperature**2) / y_s.shape[0]
-        return loss * 100
+    def concat_all_gather(self, embeddings):
+        """
+        Performs all_gather operation on the provided tensors.
+        *** Warning ***: torch.distributed.all_gather has no gradient.
+        """
+        tensors_gather = [torch.ones_like(embeddings)
+            for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensors_gather, embeddings, async_op=False)
 
+        output = torch.cat(tensors_gather, dim=0)
+        return output
+
+    @torch.no_grad()
+    def _dequeue_and_enqueue(self, keys):
+        # gather keys before updating queue
+        keys = self.concat_all_gather(keys)
+
+        batch_size = keys.shape[0]
+
+        ptr = int(self.queue_ptr)
+        assert self.K % batch_size == 0  # for simplicity
+
+        # replace the keys at ptr (dequeue and enqueue)
+        self.queue[:, ptr:ptr + batch_size] = keys.T
+        ptr = (ptr + batch_size) % self.K  # move pointer
+
+        self.queue_ptr[0] = ptr
+    
+    def kd_loss(self, emb, emb_t, temp=0.05, scale=10):
+        keys = self.concat_all_gather(emb_t)
+
+        cur_queue = self.queue.clone().detach()
+        cur_queue_enqueue = torch.cat((keys.T, cur_queue), 1)
+
+        t_dist = torch.einsum('nc,ck->nk', [emb_t, cur_queue_enqueue.detach()])
+        s_dist = torch.einsum('nc,ck->nk', [emb, cur_queue_enqueue.detach()])
+
+        t_dist /= temp
+        s_dist /= temp
+
+        self._dequeue_and_enqueue(emb_t)
+
+        kd_loss = - torch.sum(F.softmax(t_dist, dim=1) * F.log_softmax(s_dist, dim=1), dim=1).mean() / scale
+        self.log("kd_loss", kd_loss, on_step=True, on_epoch=True, prog_bar=True)
+
+        return kd_loss
+ 
     def cross_gpu_similarity(self, embeddings, instance_labels, mixup: bool):
         """Compute a cross-GPU embedding similarity matrix.
 
@@ -371,9 +416,9 @@ class SSCD(pl.LightningModule):
         identity[:, R * N : (R + 1) * N] = torch.eye(N).to(identity)
         return similarity, match_matrix, identity
 
-    def loss(self, emb_t, emb_s, instance_labels):
+    def loss(self, embeddings, instance_labels):
         similarity, match_matrix, identity = self.cross_gpu_similarity(
-            emb_t, instance_labels, self.mixup
+            embeddings, instance_labels, self.mixup
         )
         non_matches = match_matrix == 0
         nontrivial_matches = match_matrix * (~identity)
@@ -406,12 +451,6 @@ class SSCD(pl.LightningModule):
             entropy_loss = -closest_distance.log().mean() * self.entropy_weight
             components["entropy"] = entropy_loss
             loss = infonce_loss + entropy_loss
-        
-        if emb_s is not None:
-            kd_loss = self.kd_loss(emb_t, emb_s) * 100
-            components["KD_Loss"] = kd_loss
-            loss = infonce_loss + kd_loss
-            emb_t = emb_s
 
         # Log stats and loss components.
         with torch.no_grad():
@@ -420,7 +459,7 @@ class SSCD(pl.LightningModule):
                 / nontrivial_matches.sum(),
                 "negative_sim": (similarity * non_matches).sum() / non_matches.sum(),
                 "nearest_negative_sim": max_non_match_sim.mean(),
-                "center_l2_norm": emb_t.mean(dim=0).pow(2).sum().sqrt(),
+                "center_l2_norm": embeddings.mean(dim=0).pow(2).sum().sqrt(),
             }
         self.log_dict(stats, on_step=False, on_epoch=True)
         self.log_dict(components, on_step=True, on_epoch=True, prog_bar=True)
@@ -435,14 +474,15 @@ class SSCD(pl.LightningModule):
                 stats,
                 global_step=self.global_step,
             )
+
         return loss
 
     def validation_step(self, batch, batch_idx):
         input = batch["input"]
         metadata_keys = ["image_num", "split", "instance_id"]
         batch = {k: v for (k, v) in batch.items() if k in metadata_keys}
-        if self.args.kd:
-            batch["embeddings"] = self(input)[-1]
+        if self.kd:
+            batch["embeddings"] = self(input)[0]
         else:
             batch["embeddings"] = self(input)
         
@@ -471,6 +511,12 @@ class SSCD(pl.LightningModule):
         metrics = {k: 0.0 if v is None else v for (k, v) in metrics.items()}
         self.log_dict(metrics, on_epoch=True)
 
+        if metrics['uAP'] > self.best_map:
+            path = os.path.join(self.logger.log_dir, f"best_epoch_{self.current_epoch}_{metrics['uAP']}.pt")
+            self.save_torchscript(path)
+
+            self.best_map = metrics['uAP']
+
     def on_train_epoch_end(self):
         metrics = []
         for k, v in self.trainer.logged_metrics.items():
@@ -484,12 +530,13 @@ class SSCD(pl.LightningModule):
         metrics = ", ".join(metrics)
         self.print(f"Epoch {self.current_epoch}: {metrics}")
 
+
     def on_train_end(self):
         if self.global_rank != 0:
             return
         if not self.logger:
             return
-        path = os.path.join(self.logger.log_dir, "model_torchscript.pt")
+        path = os.path.join(self.logger.log_dir, "final_torchscript.pt")
         self.save_torchscript(path)
 
     def save_torchscript(self, filename):

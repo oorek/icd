@@ -9,3 +9,4 @@ augly
 pandas
 numpy
 tensorboard
+timm
