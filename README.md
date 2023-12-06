@@ -29,6 +29,65 @@ with some components from [Classy Vision](https://classyvision.ai/).
 - ViT-S
 - MobileViT
 
+## Installation
+- git repository download
+```shell
+$ cd ${WORKSPACE}
+$ git clone https://github.com/oorek/icd.git
+$ cd icd
+```
+- docker-compose.yml 수정
+  - volume 경로, ports(8000, 22) 수정 필요
+```shell
+$ vim docker-compose.yml
+version: '2.3'
+
+services:
+  main:
+    container_name: grad_new
+    ipc: host
+    build:
+      context: .
+      dockerfile: Dockerfile
+    runtime: nvidia
+    env_file:
+      - docker-compose-env/main.env
+    restart: always
+    tty: true
+    stdin_open: true
+    volumes:
+      - type: volume
+        source: nfs_shared_
+        target: /nfs_shared_
+        volume:
+          nocopy: true
+      - type: volume
+        source: nfs_shared
+        target: /nfs_shared
+        volume:
+          nocopy: true
+      - /home/mmlab/hdd/grad/grad_new/grad_new:/user
+      - /home/mmlab/hdd/dataset:/dataset
+    ports:
+      - "12100:8000"
+      - "12122:22"
+    expose:
+      - "8080"
+
+volumes:
+  nfs_shared_:
+    driver_opts:
+      type: "nfs"
+      o: "addr=mldisk.sogang.ac.kr,nolock,soft,rw"
+      device: ":/volume3/nfs_shared_"
+
+  nfs_shared:
+    driver_opts:
+      type: "nfs"
+      o: "addr=mlsun.sogang.ac.kr,nolock,soft,rw"
+      device: ":/volume1/nfs_shared"
+```
+
 
 ## SSCD Pretrained Models
 
