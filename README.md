@@ -56,16 +56,6 @@ services:
     tty: true
     stdin_open: true
     volumes:
-      - type: volume
-        source: nfs_shared_
-        target: /nfs_shared_
-        volume:
-          nocopy: true
-      - type: volume
-        source: nfs_shared
-        target: /nfs_shared
-        volume:
-          nocopy: true
       - /home/mmlab/hdd/grad/grad_new/grad_new:/user
       - /home/mmlab/hdd/dataset:/dataset
     ports:
@@ -74,21 +64,43 @@ services:
     expose:
       - "8080"
 
-volumes:
-  nfs_shared_:
-    driver_opts:
-      type: "nfs"
-      o: "addr=mldisk.sogang.ac.kr,nolock,soft,rw"
-      device: ":/volume3/nfs_shared_"
-
-  nfs_shared:
-    driver_opts:
-      type: "nfs"
-      o: "addr=mlsun.sogang.ac.kr,nolock,soft,rw"
-      device: ":/volume1/nfs_shared"
 ```
-
-
+- 도커 컨테이너 업로드 후 패키지 설치
+```shell
+$ docker-compose up -d --build
+$ docker attach ${CONTAINER NAME}
+$ pip install -r requirements.txt
+```
+## Train
+```shell
+$ sh train.sh
+MASTER_ADDR="localhost" MASTER_PORT="20281" NODE_RANK="0" WORLD_SIZE=2 \
+  ./sscd/train.py --nodes=1 --gpus=2 \                                     # DDP 셋팅
+  --train_dataset_path=/nfs_shared/DISC/images/train \                     # 학습 데이터셋 경로
+  --val_dataset_path=/nfs_shared/DISC/val_images \                         # 검증 데이터셋 경로
+  --query_dataset_path /nfs_shared/DISC/images/final_queries \             # Query 데이터셋 경로
+  --ref_dataset_path /nfs_shared/DISC/images/references \                  # Reference 데이터셋 경로
+  --augmentations=ADVANCED --mixup=false \                                 # 이미지 증강
+  --batch_size 256 \                                                       # 배치사이즈 
+  --base_learning_rate 1 \                                                 # 러닝레이트
+  --output_path=./ \                                                       # 모델 저장 경로
+  --backbone=TV_EFFICIENTNET_B0 \                                          # stuent 백본 아키텍쳐 설정
+  --ckpt=./weights/sscd_disc_mixup.torchvision.pt \                        # 티쳐 모델 체크포인트
+  --workers 16                                                             # CPU worker 수
+```
+## Evaluation
+```shell
+$ sh disc_eval.sh
+sscd/disc_eval.py
+--disc_path /dataset/DISC \                                                    # 데이터셋 경로
+--gpus=2 \                                                                     # gpu 수
+--output_path=./disc_eval/simclr \                                             # 아웃풋 경로
+--size=288                                                                     # 이미지 사이즈
+--preserve_aspect_ratio=false \                                                # 이미지 비율 설정
+--backbone=CV_RESNET50                                                         # 백본 아키텍쳐
+--dims=512                                                                     # 피쳐 차원
+--checkpoint=lightning_logs/version_26/checkpoints/epoch\=81-step\=472625.ckpt # 체크포인트 
+```
 ## SSCD Pretrained Models
 
 | name                   | dataset  | trunk           | augmentations    | dimensions | classy vision                                                                               | torchvision                                                                                      | torchscript                                                                                      |
